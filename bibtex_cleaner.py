@@ -12,6 +12,7 @@ authors_others = 2
 
 # use journal abbreviation database
 journal_abbrv = True
+journal_abbrv_dots = False
 
 # export only selected authors
 selected_authors = []
@@ -25,7 +26,7 @@ omit_fields = ['type', 'abstract', 'keywords', 'eprint', 'month',
 # translate 'Lukes' -> 'Lukeš'
 czech_authors = ['Lukeš']
 
-qchars = {'{': '}', '"': '"'}
+wdir = os.path.dirname(__file__)
 
 
 def get_jabrrv_table():
@@ -33,9 +34,8 @@ def get_jabrrv_table():
     Return journal abbreviation table. Generate it from .txt file or read from .pkl
     file if already generated (fast access).
     """
-    jabrrv_fname_txt = 'jabref_wos_abbrev_dots.txt'
-    # jabrrv_fname_txt = 'jabref_wos_abbrev.txt'
-    jabrrv_fname_pkl = 'jabref_wos_abbrev.pkl'
+    jabrrv_fname_txt = os.path.join(wdir, 'jabref_wos_abbrev_dots.txt')
+    jabrrv_fname_pkl = os.path.join(wdir, 'jabref_wos_abbrev.pkl')
 
     if os.path.exists(jabrrv_fname_pkl):
         with open(jabrrv_fname_pkl, 'rb') as f:
@@ -45,7 +45,7 @@ def get_jabrrv_table():
         with open(jabrrv_fname_txt, 'rt') as f:
             for line in f:
                 j = line.split('=')
-                table[j[0].strip().lower()] = j[1].strip()
+                table[j[0].strip()] = j[1].strip()
 
         with open(jabrrv_fname_pkl, 'wb') as f:
             pickle.dump(table, f)
@@ -68,7 +68,8 @@ def parse_authors(auths):
     out = []
     for auth in auths.split(' and '):
         if ',' in auth:
-            out.append([k.strip() for k in auth.split(',')])
+            out.append([k.strip().replace('. ', '.').replace('~', '')
+                        for k in auth.split(',')])
         else:
             aux = auth.split()
             out.append(aux[-1:] + [' '.join(aux[:-1])])
@@ -77,9 +78,9 @@ def parse_authors(auths):
     for a in out:
         aux = a[1].replace('.', '')
         if len(aux) > 1 and aux.upper() == aux:
-            aux = list(aux)
+            aux = list(aux.replace('-', ''))
         else:
-            aux = a[1].replace('.', ' ').split()
+            aux = (a[1].replace('-', ' ').replace('.', ' ')).split()
         a[1] = '~'.join([f'{k[0]}.' for k in aux])
 
         for ka in czech_authors:
@@ -96,26 +97,29 @@ def get_items(s):
     """
     out = {}
 
-    while True:
-        idx = s.find('=')
-        if idx < 0:
-            break
-        key = (s[:idx].split()[-1]).lower()
-        s = s[(idx + 1):].strip()
-        if s[0] not in qchars:
-            idx = s.find(',')
-            val = s[:idx]
+    s = s.strip().replace(r'\"', '@@')
+    s = s.replace('{', '|').replace('}', '|').replace('"', '|')
+    s = s.replace('@@', r'\"')
+    parts = s.split('=')
+
+    key = parts.pop(0).strip().lower()
+    aval = []
+    while len(parts) > 0:
+        next = parts.pop(0).strip()
+        aux = next.split()
+        if len(parts) > 0 and len(aux) > 1 and aux[-2][-1] == ',':
+            out[key] = '='.join(aval + [' '.join(aux[:-1])])
+            key = aux[-1].strip().lower()
+            aval = []
         else:
-            bs = qchars[s[0]] + ','
-            s = s[1:]
-            idx = s.find(bs)
-            val = s[:idx]
-        val = val.replace('{', '')
-        val = val.replace('}', '')
-        val = val.replace('\n', ' ')
-        val = val.replace('\r', '')
-        out[key] = ' '.join(val.strip().split())
-        s = s[(idx + 1):].strip()
+            aval.append(' '.join(aux))
+
+    out[key] = '='.join(aval)
+
+    for k in out.keys():
+        out[k] = out[k].strip().replace('|', '')
+        if len(out[k]) > 0 and out[k][-1] == ',':
+            out[k] = out[k][:-1]
 
     return out
 
@@ -157,11 +161,18 @@ def generate_latex_main(fname_latex, fname_bib, bib_keys):
 def main(fname):
     bibout = {}
     bib = open(fname, 'rt').read()
-    bibitems = bib.split('@')
+    bibitems = [k.strip() for k in bib.split('@')]
+
+    if journal_abbrv:
+        jabbrv_table = {k.lower(): v
+                        for k, v in get_jabrrv_table().items()}
+        jabbrv_table_vals = {v.lower().replace('.', ''): v
+                             for v in jabbrv_table.values()}
+    else:
+        jabbrv_table_inv = {v.lower().replace('.', ''): k
+                            for k, v in get_jabrrv_table().items()}
 
     bibitems_keys = {}
-    if journal_abbrv:
-        jabbrv_table = get_jabrrv_table()
 
     for bibitem in bibitems:
         if len(bibitem) < 10:
@@ -171,7 +182,7 @@ def main(fname):
         itemtype, ikey = bibitem[:idx].split('{')
         itemtype = itemtype.lower()
 
-        out = get_items(bibitem[(idx + 1):])
+        out = get_items(bibitem[(idx + 1):-1])
         out['type'] = itemtype
 
         if 'editor' in out:
@@ -185,14 +196,28 @@ def main(fname):
             out['doi'] = out['doi'].replace('https://doi.org/', '')
 
         if 'journal' in out:
+            aux = out['journal'].lower().replace(r'\&', '&')
+            aux2 = aux.replace('.', '')
             if journal_abbrv:
-                aux = out['journal'].lower().replace(r'\&', '&')
                 if aux in jabbrv_table:
-                    out['journal'] = jabbrv_table[aux]
+                    if journal_abbrv_dots:
+                        out['journal'] = jabbrv_table[aux]
+                    else:
+                        out['journal'] = jabbrv_table[aux].replace('.', '')
+                elif aux2 in jabbrv_table_vals:
+                    if journal_abbrv_dots:
+                        out['journal'] = jabbrv_table_vals[aux2]
+                    else:
+                        out['journal'] = out['journal'].replace('.', '')
+                else:
+                    print(f"  journal name not abbreviated: {out['journal']}")
+            else:
+                if aux2 in jabbrv_table_inv:
+                    out['journal'] = jabbrv_table_inv[aux2]
 
         if new_key:
             year = out.get('year', 'XXXX')
-            auth = auths[0][0].replace('~', '_')
+            auth = auths[0][0].replace('~', '').replace(' ', '')
             ref = get_jref(out['journal']) if out['type'] == 'article' else ''
             bkey = get_ascii(f'{auth}{year}{ref}')
 
