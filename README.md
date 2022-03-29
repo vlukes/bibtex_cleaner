@@ -1,2 +1,4 @@
-# bibtex_cleaner
+Bibtex Cleaner
+==============
+
 Clean .bib files
